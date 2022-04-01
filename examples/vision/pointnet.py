@@ -93,9 +93,8 @@ NUM_POINTS = 2048
 NUM_CLASSES = 10
 BATCH_SIZE = 32
 
-train_points, test_points, train_labels, test_labels, CLASS_MAP = parse_dataset(
-    NUM_POINTS
-)
+train_points, test_points, train_labels, test_labels, CLASS_MAP = parse_dataset(NUM_POINTS,DATA_DIR)
+
 
 """
 Our data can now be read into a `tf.data.Dataset()` object. We set the shuffle buffer
