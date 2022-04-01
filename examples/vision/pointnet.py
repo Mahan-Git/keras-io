@@ -34,43 +34,13 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from matplotlib import pyplot as plt
+from pathlib import Path
+from sklearn.model_selection import train_test_split
 
-tf.random.set_seed(1234)
 
-"""
-## Load dataset
+current_folder = Path.cwd()
+DATA_DIR = os.path.join((current_folder), "ModelNet40")
 
-We use the ModelNet10 model dataset, the smaller 10 class version of the ModelNet40
-dataset. First download the data:
-"""
-
-DATA_DIR = tf.keras.utils.get_file(
-    "modelnet.zip",
-    "http://3dvision.princeton.edu/projects/2014/3DShapeNets/ModelNet10.zip",
-    extract=True,
-)
-DATA_DIR = os.path.join(os.path.dirname(DATA_DIR), "ModelNet10")
-
-"""
-We can use the `trimesh` package to read and visualize the `.off` mesh files.
-"""
-
-mesh = trimesh.load(os.path.join(DATA_DIR, "chair/train/chair_0001.off"))
-mesh.show()
-
-"""
-To convert a mesh file to a point cloud we first need to sample points on the mesh
-surface. `.sample()` performs a unifrom random sampling. Here we sample at 2048 locations
-and visualize in `matplotlib`.
-"""
-
-points = mesh.sample(2048)
-
-fig = plt.figure(figsize=(5, 5))
-ax = fig.add_subplot(111, projection="3d")
-ax.scatter(points[:, 0], points[:, 1], points[:, 2])
-ax.set_axis_off()
-plt.show()
 
 """
 To generate a `tf.data.Dataset()` we need to first parse through the ModelNet data
@@ -80,19 +50,19 @@ enumerate index value as the object label and use a dictionary to recall this la
 """
 
 
-def parse_dataset(num_points=2048):
-
+def parse_dataset(num_points,DATA_DIR):
+    
     train_points = []
     train_labels = []
     test_points = []
     test_labels = []
     class_map = {}
-    folders = glob.glob(os.path.join(DATA_DIR, "[!README]*"))
-
+    folders = glob.glob(os.path.join(DATA_DIR, "*"))
+    print(folders)
     for i, folder in enumerate(folders):
         print("processing class: {}".format(os.path.basename(folder)))
         # store folder name with ID so we can retrieve later
-        class_map[i] = folder.split("/")[-1]
+        class_map[i] = folder.split("\\")[-1]
         # gather all files
         train_files = glob.glob(os.path.join(folder, "train/*"))
         test_files = glob.glob(os.path.join(folder, "test/*"))
@@ -149,6 +119,20 @@ test_dataset = tf.data.Dataset.from_tensor_slices((test_points, test_labels))
 train_dataset = train_dataset.shuffle(len(train_points)).map(augment).batch(BATCH_SIZE)
 test_dataset = test_dataset.shuffle(len(test_points)).batch(BATCH_SIZE)
 
+def get_dataset_partitions_tf(ds, ds_size, train_split=0.8, val_split=0.2):
+    assert (train_split + val_split) == 1
+    #assert statement is used to continue the execute if the given condition evaluates to True.
+    
+    train_size = int(train_split * ds_size)
+    val_size = int(val_split * ds_size)
+    
+    train_dataset = ds.take(ds_size)    
+    val_dataset = ds.skip(train_size).take(val_size)
+    
+    return train_dataset, val_dataset
+
+train_dataset, val_dataset = get_dataset_partitions_tf(train_dataset, len(train_dataset))
+
 """
 ### Build a model
 
@@ -198,10 +182,10 @@ class OrthogonalRegularizer(keras.regularizers.Regularizer):
 
 
 def tnet(inputs, num_features):
-
+    
     # Initalise bias as the indentity matrix
     bias = keras.initializers.Constant(np.eye(num_features).flatten())
-    reg = OrthogonalRegularizer(num_features)
+    # reg = OrthogonalRegularizer(num_features)
 
     x = conv_bn(inputs, 32)
     x = conv_bn(x, 64)
@@ -213,7 +197,7 @@ def tnet(inputs, num_features):
         num_features * num_features,
         kernel_initializer="zeros",
         bias_initializer=bias,
-        activity_regularizer=reg,
+        # activity_regularizer=reg,
     )(x)
     feat_T = layers.Reshape((num_features, num_features))(x)
     # Apply affine transformation to input features
@@ -231,21 +215,24 @@ inputs = keras.Input(shape=(NUM_POINTS, 3))
 
 x = tnet(inputs, 3)
 x = conv_bn(x, 32)
+#x = conv_bn(inputs, 32)
 x = conv_bn(x, 32)
-x = tnet(x, 32)
-x = conv_bn(x, 32)
+#x = tnet(x, 64)
+#x = conv_bn(x, 32)
 x = conv_bn(x, 64)
-x = conv_bn(x, 512)
+x = conv_bn(x, 128)
+x = conv_bn(x, 1024)
 x = layers.GlobalMaxPooling1D()(x)
+x = dense_bn(x, 512)
+x = layers.Dropout(0.3)(x)
 x = dense_bn(x, 256)
 x = layers.Dropout(0.3)(x)
-x = dense_bn(x, 128)
-x = layers.Dropout(0.3)(x)
+
 
 outputs = layers.Dense(NUM_CLASSES, activation="softmax")(x)
-
-model = keras.Model(inputs=inputs, outputs=outputs, name="pointnet")
-model.summary()
+current_model = keras.Model(inputs=inputs, outputs=outputs, name="pointnet")
+#summary
+current_model.summary()
 
 """
 ### Train model
@@ -254,13 +241,33 @@ Once the model is defined it can be trained like any other standard classificati
 using `.compile()` and `.fit()`.
 """
 
-model.compile(
+current_model.compile(
     loss="sparse_categorical_crossentropy",
-    optimizer=keras.optimizers.Adam(learning_rate=0.001),
-    metrics=["sparse_categorical_accuracy"],
+    optimizer=keras.optimizers.Adam(learning_rate=0.0001),
+    metrics=["sparse_categorical_accuracy"]
 )
 
-model.fit(train_dataset, epochs=20, validation_data=test_dataset)
+model_history = current_model.fit(train_dataset, batch_size=BATCH_SIZE, epochs=100, validation_data=val_dataset)
+
+plt.figure()
+plt.plot(model_history.history['sparse_categorical_accuracy'], label='sparse_categorical_accuracy')
+plt.plot(model_history.history['val_sparse_categorical_accuracy'], label='val_sparse_categorical_accuracy')
+# =============================================================================
+# plt.plot(model_history.history['loss'], label='loss')
+# plt.plot(model_history.history['val_loss'], label='val_loss')
+# =============================================================================
+plt.xlabel("epoch")
+plt.ylabel('accuracy')
+plt.ylim([0, 1])
+
+
+current_model.save(r'.\saved_model\current_model_modelnet40-tnet64-10class-100epochs')
+
+#load model
+model_saved = keras.models.load_model(r'.\saved_model\current_model_modelnet40-tnet64-10class-100epochs')
+model_saved.summary()
+
+current_model = model_saved
 
 """
 ## Visualize predictions
@@ -268,26 +275,35 @@ model.fit(train_dataset, epochs=20, validation_data=test_dataset)
 We can use matplotlib to visualize our trained model performance.
 """
 
-data = test_dataset.take(1)
+#Load Photogrammetry or other models for prediction
+PREDS_DIR = os.path.join((current_folder), "Test data modelnet 40 10 classes")
+PREDS_DIR = glob.glob(os.path.join(PREDS_DIR, "*"))
+mesh = []
+for path in PREDS_DIR:
+    mesh.append(trimesh.load(path))
 
-points, labels = list(data)[0]
-points = points[:8, ...]
-labels = labels[:8, ...]
 
-# run test data through model
-preds = model.predict(points)
+pred_files = []
+for m in mesh:    
+    pred_files.append(m.sample(2048))
+
+pred_files = np.array(pred_files)
+
+
+preds = current_model.predict(pred_files)
+print(preds)
 preds = tf.math.argmax(preds, -1)
 
-points = points.numpy()
+print(preds)
 
 # plot points with predicted class and label
 fig = plt.figure(figsize=(15, 10))
-for i in range(8):
-    ax = fig.add_subplot(2, 4, i + 1, projection="3d")
-    ax.scatter(points[i, :, 0], points[i, :, 1], points[i, :, 2])
+for i in range(20):
+    ax = fig.add_subplot(5, 4, i + 1, projection="3d")
+    ax.scatter(pred_files[i, :, 0], pred_files[i, :, 1], pred_files[i, :, 2],s=1, c='black')
     ax.set_title(
-        "pred: {:}, label: {:}".format(
-            CLASS_MAP[preds[i].numpy()], CLASS_MAP[labels.numpy()[i]]
+        "pred: {:}".format(
+            CLASS_MAP[preds[i].numpy()]
         )
     )
     ax.set_axis_off()
